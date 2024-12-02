@@ -9,6 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New sidebar section with support information (email and slack contact; documentation)
+
+### Changed
+
+## v1.9.0 - 2024-08-28
+
+### Added
+
+- Semgrep binaries are now included in the extension, so Semgrep does not need to be installed to use the extension
+
+### Changed
+
+- Updated README
+- Semgrep JS version bumped
+
+## v1.8.2 - 2024-06-17
+
+### Added
+
+### Changed
+
+- Updated README
+- Extension will now log to a temporary file, and will properly handle LS telemetry events
+
+## v1.8.1 - 2024-06-06
+
+### Added
+
+### Changed
+
+- Extension no longer errors out if a log can't be written
+
+## v1.8.0 - 2024-06-05
+
+### Added
+
+- If telemetry is enabled, the extension will now send crash reports of the Semgrep process, along with errors in the extension
+
+### Changed
+
+- The extension now pings semgrep.dev to check the latest CLI version
+
+## v1.7.1 - 2024-05-03
+
+### Added
+
+- Bumped LSP.js to 1.71.0
+
+### Changed
+
+## v1.7.0 - 2024-04-24
+
+### Added
+
+- Reworked the Semgrep Search UI to be more modern, performant, and expressive!
+  Features include:
+  - ability to specify multiple patterns to match / not match
+  - file-path includes/excluding
+  - semantic autofix (individual and mass)
+  - match previews
+  - language-specific and language-agnostic search
+  - streaming search
+
+### Changed
+
+- Scan workspace commands will now toggle "Only Git Dirty" before scanning
+
+## v1.6.3 - 2024-02-02
+
+### Added
+
+### Changed
+
+- Updated README
+- Bumped LSP.js version
+
+## v1.6.2 - 2024-01-05
+
+### Added
+
+### Changed
+
+- Fixed LSP.js versioning
+
+## v1.6.1 - 2024-01-05
+
+### Added
+
+- Heap size setting for LSP.js
+
 ### Changed
 
 ## v1.6.0 - 2023-12-19
@@ -95,7 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changes
 
 - Enable scanning on JavaScript React (.jsx) files by default.
-  [Semgrep 0.20.0](https://github.com/returntocorp/semgrep/releases/tag/v0.20.0) had just been released
+  [Semgrep 0.20.0](https://github.com/semgrep/semgrep/releases/tag/v0.20.0) had just been released
   with support for JSX tag metavariables.
 
 ## 0.1.1 - 2020-08-11

@@ -1,16 +1,19 @@
+import fs from "node:fs";
+import { EventEmitter } from "node:stream";
+import * as vscode from "vscode";
 import {
-  ExtensionContext,
-  OutputChannel,
-  Uri,
-  WorkspaceConfiguration,
+  type ExtensionContext,
+  type OutputChannel,
+  type WorkspaceConfiguration,
+  window,
+  workspace,
 } from "vscode";
-import { window, workspace } from "vscode";
-
-import { LSP_LOG_FILE, VSCODE_CONFIG_KEY, VSCODE_EXT_NAME } from "./constants";
-import { DEFAULT_LSP_LOG_URI, Logger } from "./utils";
-import { SemgrepSearchProvider } from "./searchResultsTree";
+import type { LanguageClient } from "vscode-languageclient/node";
+import { VSCODE_CONFIG_KEY, VSCODE_EXT_NAME } from "./constants";
 import { SemgrepDocumentProvider } from "./showAstDocument";
-import { LanguageClient } from "vscode-languageclient/node";
+import { setSentryContext } from "./telemetry/sentry";
+import { Logger } from "./utils";
+import type { SemgrepSearchWebviewProvider } from "./views/webview";
 
 export class Config {
   get cfg(): WorkspaceConfiguration {
@@ -24,35 +27,46 @@ export class Config {
     return this.cfg.get<string>("trace.server") == "verbose";
   }
 
+  get lspjsBreakBeforeStart(): boolean {
+    return this.cfg.get<boolean>("trace.lspjsBreakBeforeStart") ?? false;
+  }
   get path(): string {
     return this.cfg.get<string>("path") ?? "semgrep";
+  }
+
+  get onlyGitDirty(): boolean {
+    return this.cfg.get<boolean>("scan.onlyGitDirty") ?? false;
+  }
+  set onlyGitDirty(val: boolean) {
+    this.cfg.update("scan.onlyGitDirty", val);
   }
 }
 
 export class Environment {
-  private _config: Config = new Config();
-  semgrep_log: Uri = DEFAULT_LSP_LOG_URI;
+  public semgrepVersion: string | undefined;
+
+  /* The scan ID is the (hopefully) unique identifier associated to each
+     /semgrep/search request.
+     The reason why we need it is for synchronization, in the event that
+     a user issues a scan while another one is still completing. We don't
+     have a good way of reaching out to each individual searchLoop()
+     (which is asynchronous) and telling it to stop, so we change this
+     mutable variable so that it knows to stop on its own.
+   */
+  public scanID: string | null = null;
+
   private _client: LanguageClient | null = null;
+  private _provider: SemgrepSearchWebviewProvider | null = null;
   private constructor(
     readonly context: ExtensionContext,
-    config: Config,
-    readonly searchView: SemgrepSearchProvider,
     readonly documentView: SemgrepDocumentProvider,
     readonly channel: OutputChannel,
     readonly logger: Logger,
-    public version: string = "",
-    public startupPromise?: Promise<void>
+    public config: Config,
+    // rulesRefreshedEmitter is used to notify if rules are refreshed, i.e. after startup, a login, or a manual refresh
+    private rulesRefreshedEmitter: EventEmitter = new EventEmitter(),
   ) {
-    this._config = config;
-    this.semgrep_log = Uri.joinPath(context.logUri, LSP_LOG_FILE);
-  }
-
-  get config(): Config {
-    return this._config;
-  }
-
-  set config(config: Config) {
-    this._config = config;
+    setSentryContext(this);
   }
 
   get loggedIn(): boolean {
@@ -60,6 +74,7 @@ export class Environment {
   }
 
   set loggedIn(val: boolean) {
+    vscode.commands.executeCommand("setContext", "semgrep.loggedIn", val);
     this.context.globalState.update("loggedIn", val);
   }
 
@@ -89,20 +104,44 @@ export class Environment {
     return this._client;
   }
 
+  get globalStoragePath(): string {
+    const path = this.context.globalStorageUri.fsPath;
+    // check if path exists, if not create it
+    fs.mkdir(path, () => undefined);
+    return path;
+  }
+
+  emitRulesRefreshedEvent(): void {
+    this.rulesRefreshedEmitter.emit("refresh");
+  }
+
+  onRulesRefreshed(cb: () => void, once = false): void {
+    if (once) {
+      this.rulesRefreshedEmitter.once("refresh", cb);
+    } else {
+      this.rulesRefreshedEmitter.on("refresh", cb);
+    }
+  }
+
+  set provider(provider: SemgrepSearchWebviewProvider | null) {
+    if (provider) {
+      this._provider = provider;
+    }
+  }
+
+  get provider(): SemgrepSearchWebviewProvider | null {
+    if (!this._provider) {
+      window.showWarningMessage("Semgrep Search Webview not active");
+    }
+    return this._provider;
+  }
+
   static async create(context: ExtensionContext): Promise<Environment> {
     const config = await Environment.loadConfig(context);
     const channel = window.createOutputChannel(VSCODE_EXT_NAME);
     const logger = new Logger(config.trace, channel);
-    const searchView = new SemgrepSearchProvider();
     const documentView = new SemgrepDocumentProvider();
-    return new Environment(
-      context,
-      config,
-      searchView,
-      documentView,
-      channel,
-      logger
-    );
+    return new Environment(context, documentView, channel, logger, config);
   }
 
   static async loadConfig(context: ExtensionContext): Promise<Config> {
@@ -122,10 +161,12 @@ export class Environment {
     // Reload configuration
     this.config = await Environment.loadConfig(this.context);
     this.logger.enableLogger(this.config.trace);
+    setSentryContext(this);
     return this;
   }
 
   dispose(): void {
     this.channel.dispose();
+    this.client?.dispose();
   }
 }

@@ -1,12 +1,12 @@
-import * as path from "path";
+import path from "node:path";
 import find = require("find-process");
-import * as tmp from "tmp";
-import * as cp from "child_process";
+import * as cp from "node:child_process";
 import {
   downloadAndUnzipVSCode,
   resolveCliArgsFromVSCodeExecutablePath,
   runTests,
 } from "@vscode/test-electron";
+import * as tmp from "tmp";
 
 const REPOS = [
   ["semgrep", "https://github.com/semgrep/semgrep.git", "v1.52.0"],
@@ -31,10 +31,15 @@ async function main() {
     {
       encoding: "utf-8",
       stdio: "inherit",
-    }
+    },
   );
   // Setup temp dir for all repos
   const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  const realTmpDir = cp
+    .execSync(`pwd -P`, { cwd: tmpDir.name })
+    .toString()
+    .trim();
+  console.log(`Using tmp dir ${realTmpDir}`);
   let hasFailed = false;
   try {
     // The folder containing the Extension Manifest package.json
@@ -72,13 +77,14 @@ async function main() {
     extensionTestsEnv = {
       ...extensionTestsEnv,
       CWD: cwd,
+      NODE_ENV: "test",
     };
     for (const repo of REPOS) {
       const repoName = repo[0];
       const repoUrl = repo[1];
       const tag = repo[2];
       console.log(`Running tests for ${repoName}`);
-      const repoPath = path.join(tmpDir.name, repoName); // nosem
+      const repoPath = path.join(realTmpDir, repoName); // nosem
       console.log(`Running in ${repoPath}`);
       // Clone repo
       cp.execSync(`git clone ${repoUrl} ${repoPath}`); // nosem

@@ -1,10 +1,38 @@
-import * as fs from "fs";
-import * as path from "path";
-import * as cp from "child_process";
+import cp from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import * as semver from "semver";
-const execShell = (cmd: string, env?: any) =>
+import * as vscode from "vscode";
+import {
+  type Executable,
+  LanguageClient,
+  type LanguageClientOptions,
+  type ServerOptions,
+  TransportKind,
+} from "vscode-languageclient/node";
+import type { NotificationHandler0 } from "vscode-languageserver";
+import which from "which";
+import {
+  CLIENT_ID,
+  CLIENT_NAME,
+  DIAGNOSTIC_COLLECTION_NAME,
+  DIST_BINARY_PATH,
+  LSPJS_PATH,
+  VERSION_PATH,
+} from "./constants";
+import type { Environment } from "./env";
+import { type LspErrorParams, rulesRefreshed } from "./lspExtensions";
+import {
+  ProxyOutputChannel,
+  SentryErrorHandler,
+  captureLspError,
+  withSentryAsync,
+} from "./telemetry/sentry";
+import { checkCliVersion } from "./utils";
+
+const execShell = (cmd: string, args: string[]) =>
   new Promise<string>((resolve, reject) => {
-    cp.exec(cmd, { env: env }, (err, out) => {
+    cp.execFile(cmd, args, (err, out) => {
       if (err) {
         return reject(err);
       }
@@ -12,69 +40,48 @@ const execShell = (cmd: string, env?: any) =>
     });
   });
 
-import {
-  LanguageClient,
-  LanguageClientOptions,
-  ServerOptions,
-  Executable,
-  TransportKind,
-} from "vscode-languageclient/node";
-
-import * as which from "which";
-
-import * as vscode from "vscode";
-
-import {
-  SEMGREP_BINARY,
-  CLIENT_ID,
-  CLIENT_NAME,
-  DIAGNOSTIC_COLLECTION_NAME,
-  MIN_VERSION,
-  LATEST_VERSION,
-} from "./constants";
-import { Environment } from "./env";
-
 async function findSemgrep(env: Environment): Promise<Executable | null> {
-  let server_path = which.sync(SEMGREP_BINARY, { nothrow: true });
-  let env_vars = null;
-  if (env.config.path !== "semgrep") {
-    server_path = env.config.path;
-  }
-  if (!server_path) {
-    let pip = which.sync("pip", { nothrow: true });
-    if (!pip) {
-      pip = which.sync("pip3", { nothrow: true });
+  let serverPath;
+  // First, check if the user has set the path to the Semgrep binary, use that always
+  if (env.config.path.length > 0) {
+    serverPath = env.config.path;
+    // check if the path exists
+    if (!fs.existsSync(serverPath)) {
+      // try checking if its a binary in the PATH
+      serverPath = which.sync("semgrep", { nothrow: true });
     }
-    if (!pip) {
-      vscode.window.showErrorMessage(
-        "Python 3.7+ required for the Semgrep Extension"
-      );
-      return null;
+    // Only check the version if we're not using the packaged version
+    // This is to avoid us releasing a new version of the extension late and then people get annoying popups
+    if (!env.config.cfg.get("ignoreCliVersion") && serverPath) {
+      const version = await execShell(serverPath, ["--version"]);
+      const semVersion = new semver.SemVer(version);
+      checkCliVersion(semVersion);
+      env.semgrepVersion = version;
+      await env.reloadConfig();
     }
-    fs.mkdir(env.context.globalStorageUri.fsPath, () => undefined);
-    const globalstorage_path = env.context.globalStorageUri.fsPath;
-    const cmd = `PYTHONUSERBASE="${globalstorage_path}" pip install --user --upgrade --ignore-installed semgrep`;
-    try {
-      await execShell(cmd);
-    } catch {
-      vscode.window.showErrorMessage(
-        "Semgrep binary could not be installed, please see https://semgrep.dev/docs/getting-started/ for instructions"
-      );
-      return null;
-    }
-    server_path = `${globalstorage_path}/bin/semgrep`;
-    env_vars = {
-      ...process.env,
-      PYTHONUSERBASE: globalstorage_path,
-    };
   }
 
-  return {
-    command: server_path,
-    options: {
-      env: env_vars,
-    },
-  };
+  if (!serverPath) {
+    serverPath = DIST_BINARY_PATH;
+    // Read version from extension's shipped version file
+    // This is hacky, we should instead exec the binary with --version like we did previously, but that is currently off by one release always
+    const version = fs
+      .readFileSync(VERSION_PATH)
+      .toString()
+      .trim()
+      .replace("release-", "");
+    env.semgrepVersion = version;
+    await env.reloadConfig();
+  }
+
+  // one last check to see if the binary exists
+  if (fs.existsSync(serverPath)) {
+    return {
+      command: serverPath,
+    };
+  } else {
+    return null;
+  }
 }
 
 function semgrepCmdLineOpts(env: Environment): string[] {
@@ -99,7 +106,7 @@ function semgrepCmdLineOpts(env: Environment): string[] {
 }
 
 async function serverOptionsCli(
-  env: Environment
+  env: Environment,
 ): Promise<ServerOptions | null> {
   const server = await findSemgrep(env);
   if (!server) {
@@ -117,58 +124,53 @@ async function serverOptionsCli(
   if (server.options) {
     server.options.cwd = cwd;
   }
-  if (!env.config.cfg.get("ignoreCliVersion")) {
-    const cmd = `"${server.command}" --version`;
-    const version = await execShell(cmd, server.options?.env);
-    const minor = semver.minor(version);
-    const major = semver.major(version);
-    vscode.commands.executeCommand("setContext", "semgrep.cli.minor", minor);
-    vscode.commands.executeCommand("setContext", "semgrep.cli.major", major);
-    if (!semver.satisfies(version, MIN_VERSION)) {
-      vscode.window.showErrorMessage(
-        `The Semgrep Extension requires a Semgrep CLI version ${MIN_VERSION}, the current installed version is ${version}, please upgrade.`
-      );
-      return null;
-    }
-    if (!semver.satisfies(version, LATEST_VERSION)) {
-      vscode.window.showWarningMessage(
-        `Some features of the Semgrep Extension require a Semgrep CLI version ${LATEST_VERSION}, but the current installed version is ${version}, some features may be disabled, please upgrade.`
-      );
-    }
-  }
 
   const serverOptions: ServerOptions = server;
   env.logger.log(
-    `Semgrep LSP server configuration := ${JSON.stringify(server, null, 2)}`
+    `Semgrep LSP server configuration := ${JSON.stringify(server, null, 2)}`,
   );
   return serverOptions;
 }
 
-function serverOptionsJs(env: Environment) {
-  const serverModule = path.join(__dirname, "../lspjs/dist/semgrep-lsp.js");
+function serverOptionsJs(env: Environment): ServerOptions {
+  const serverModule = LSPJS_PATH;
   const stackSize = env.config.get("stackSizeJS");
+  const heapSize = env.config.get("heapSizeJS");
+  const inspectMode = env.config.lspjsBreakBeforeStart
+    ? "inspect-brk"
+    : "inspect";
   const serverOptionsJs = {
     run: {
       module: serverModule,
       transport: TransportKind.ipc,
-      options: { execArgv: [`--stack-size=${stackSize}`] },
+      options: {
+        execArgv: [
+          `--stack-size=${stackSize}`,
+          `--max-old-space-size=${heapSize}`,
+        ],
+      },
     },
     debug: {
       module: serverModule,
       transport: TransportKind.ipc,
       options: {
-        execArgv: ["--nolazy", "--inspect=6009", `--stack-size=${stackSize}`],
+        execArgv: [
+          "--nolazy",
+          `--${inspectMode}=9229`,
+          `--stack-size=${stackSize}`,
+          `--max-old-space-size=${heapSize}`,
+        ],
       },
     },
   };
   vscode.window.showWarningMessage(
-    "Semgrep Extension is using the experimental JS LSP server, this is due to the current platform being Windows, or the setting 'semgrep.useJS' being set to true. There may be bugs or performance issues!"
+    "Semgrep Extension is using the experimental JS LSP server, this is due to the current platform being Windows, or the setting 'semgrep.useJS' being set to true. There may be bugs or performance issues!",
   );
   return serverOptionsJs;
 }
 
 async function lspOptions(
-  env: Environment
+  env: Environment,
 ): Promise<[ServerOptions, LanguageClientOptions] | [null, null]> {
   const metrics = {
     machineId: vscode.env.machineId,
@@ -187,15 +189,23 @@ async function lspOptions(
     `Semgrep Initialization Options := ${JSON.stringify(
       initializationOptions,
       null,
-      2
-    )}`
+      2,
+    )}`,
   );
+  const outputChannel = new ProxyOutputChannel(env.channel);
+  const errorHandler = new SentryErrorHandler(5, () => {
+    const attachment = outputChannel.logAsAttachment();
+
+    return attachment ? [attachment] : [];
+  });
   const clientOptions: LanguageClientOptions = {
     diagnosticCollectionName: DIAGNOSTIC_COLLECTION_NAME,
     // TODO: should we limit to support languages and keep the list manually updated?
     documentSelector: [{ language: "*", scheme: "file" }],
-    outputChannel: env.channel,
+    outputChannel,
+    traceOutputChannel: env.channel,
     initializationOptions: initializationOptions,
+    errorHandler,
     markdown: {
       isTrusted: true,
       supportHtml: false,
@@ -203,17 +213,12 @@ async function lspOptions(
   };
 
   let serverOptions;
-  if (process.platform === "win32" || env.config.get("useJS")) {
-    serverOptions = serverOptionsJs(env);
-  } else {
-    // Don't call this before as it can crash the extension on windows
+  // if we're not on windows or not using JS, we can use the CLI
+  if (process.platform !== "win32") {
     serverOptions = await serverOptionsCli(env);
-    if (!serverOptions) {
-      vscode.window.showErrorMessage(
-        "Semgrep Extension failed to activate, please check output"
-      );
-      return [null, null];
-    }
+  }
+  if (!serverOptions || env.config.get("useJS")) {
+    serverOptions = serverOptionsJs(env);
   }
 
   return [serverOptions, clientOptions];
@@ -232,30 +237,27 @@ async function start(env: Environment): Promise<void> {
     CLIENT_ID,
     CLIENT_NAME,
     serverOptions,
-    clientOptions
+    clientOptions,
   );
-  // register commands
   // Start the client. This will also launch the server
   env.logger.log("Starting language client...");
-  await c.start();
-  const startupPromise = new Promise<void>((resolve) => {
-    // set 30s timeout for rules loading
-    if (process.platform === "win32") {
-      setTimeout(() => {
-        console.warn("Rules loading timeout, starting anyway");
-        resolve();
-      }, 30000);
-    }
-    c.onNotification("$/progress", (params) => {
-      if (params?.value?.kind == "end") {
-        env.logger.log("Rules loaded");
-        resolve();
-      }
-    });
+
+  const notificationHandler: NotificationHandler0 = () => {
+    env.logger.log("Rules loaded");
+    env.emitRulesRefreshedEvent();
+  };
+
+  // Register handlers here
+  c.onNotification(rulesRefreshed, notificationHandler);
+  c.onTelemetry((e) => {
+    // We only send errors, so we can safely cast this
+    // See RPC_server.ml for the definition of LspErrorParams
+    const event = e as LspErrorParams;
+    captureLspError(event);
   });
 
   env.client = c;
-  env.startupPromise = startupPromise;
+  await c.start();
 }
 
 async function stop(env: Environment | null): Promise<void> {
@@ -273,7 +275,7 @@ async function stop(env: Environment | null): Promise<void> {
 }
 
 export async function activateLsp(env: Environment): Promise<void> {
-  return start(env);
+  return withSentryAsync(() => start(env));
 }
 
 export async function deactivateLsp(env: Environment | null): Promise<void> {
@@ -283,6 +285,6 @@ export async function deactivateLsp(env: Environment | null): Promise<void> {
 export async function restartLsp(env: Environment | null): Promise<void> {
   await stop(env);
   if (env) {
-    return start(env);
+    return withSentryAsync(() => start(env));
   }
 }

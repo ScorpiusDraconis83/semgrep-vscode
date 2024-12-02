@@ -2,9 +2,9 @@
   "name": "semgrep",
   "displayName": "Semgrep",
   "description": "Security scans in a snap. Speedy SAST with a powerful rule registry for seamless detection and remediation of code vulnerabilities with each save.",
-  "version": "1.6.0",
+  "version": "1.9.14",
   "engines": {
-    "vscode": "^1.66.0"
+    "vscode": "^1.86.0"
   },
   "categories": [
     "Linters"
@@ -20,13 +20,13 @@
     "onStartupFinished"
   ],
   "publisher": "Semgrep",
-  "repository": "https://github.com/returntocorp/semgrep-vscode",
+  "repository": "https://github.com/semgrep/semgrep-vscode",
   "icon": "semgrep-icon.png",
   "galleryBanner": {
     "color": "#ffffff",
     "theme": "light"
   },
-  "qna": "https://r2c.dev/slack",
+  "qna": "https://go.semgrep.dev/slack",
   "main": "./out/main.js",
   "contributes": {
     "icons": {
@@ -72,19 +72,25 @@
         "command": "semgrep.search",
         "title": "Semgrep: Search by pattern",
         "icon": "$(search-view-icon)",
-        "when": "semgrep.cli.minor >= 25 || config.semgrep.ignoreCliVersion"
-      },
-      {
-        "command": "semgrep.search.refresh",
-        "title": "Semgrep Search: Refresh",
-        "icon": "$(search-refresh)",
-        "when": "semgrep.cli.minor >= 25 || config.semgrep.ignoreCliVersion"
+        "when": "semgrep.cli.minor >= 70 || config.semgrep.ignoreCliVersion"
       },
       {
         "command": "semgrep.search.clear",
         "title": "Semgrep Search: Clear",
         "icon": "$(search-remove)",
-        "when": "semgrep.cli.minor >= 25 || config.semgrep.ignoreCliVersion"
+        "when": "semgrep.cli.minor >= 70 || config.semgrep.ignoreCliVersion"
+      },
+      {
+        "command": "semgrep.search.exportRule",
+        "title": "Semgrep Search: Export Rule",
+        "icon": "$(search-remove)",
+        "when": "semgrep.cli.minor >= 70 || config.semgrep.ignoreCliVersion"
+      },
+      {
+        "command": "semgrep.search.replace",
+        "title": "Semgrep Search: Semantic Replace",
+        "icon": "$(replace)",
+        "when": "semgrep.cli.minor >= 70 || config.semgrep.ignoreCliVersion"
       },
       {
         "command": "semgrep.restartLanguageServer",
@@ -105,10 +111,16 @@
           "default": "off",
           "description": "Traces the communication between VS Code and the language server."
         },
+        "semgrep.trace.lspjsBreakBeforeStart": {
+          "scope": "window",
+          "type": "boolean",
+          "default": false,
+          "description": "Break before starting the LSP server in the Javascript version of the extension. Warning, this is for debugging purposes and may break things."
+        },
         "semgrep.path": {
-          "description": "Path to the semgrep executable. Note: this is overriden by the semgrep.useJS setting.",
+          "description": "Path to the Semgrep executable. If none is set the extension will use the prepackaged version of Semgrep. Note: this has no effect if semgrep.useJS is set",
           "type": "string",
-          "default": "semgrep"
+          "default": ""
         },
         "semgrep.useJS": {
           "description": "Use the pure Javascript version of the extension. Warning, this is experimental and may break or have performance issues",
@@ -119,6 +131,11 @@
           "description": "Maximum stack size (in KB) for the Javascript version of the extension. Warning, this is experimental and may break or have performance issues",
           "type": "integer",
           "default": 1000000
+        },
+        "semgrep.heapSizeJS": {
+          "description": "Maximum heap size (in MB) for the Javascript version of the extension. Increase if the extension crashes while downloading rules. Warning, this is experimental and may break or have performance issues.",
+          "type": "integer",
+          "default": 4096
         },
         "semgrep.ignoreCliVersion": {
           "type": "boolean",
@@ -176,7 +193,7 @@
         },
         "semgrep.scan.onlyGitDirty": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Only scan lines changed since the last commit"
         },
         "semgrep.scan.pro_intrafile": {
@@ -195,7 +212,7 @@
       "activitybar": [
         {
           "id": "semgrep-sidebar",
-          "title": "Semgrep Search",
+          "title": "Semgrep",
           "icon": "semgrep-icon-basic.png"
         }
       ]
@@ -203,31 +220,17 @@
     "views": {
       "semgrep-sidebar": [
         {
-          "id": "semgrep-search-results",
-          "name": "Search Results",
-          "when": "semgrep.cli.minor >= 25 || config.semgrep.ignoreCliVersion"
+          "type": "webview",
+          "id": "semgrep.searchView",
+          "name": "Code Search"
+        },
+        {
+          "id": "semgrep.view.help",
+          "name": "Help and Feedback"
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "semgrep-search-results",
-        "contents": "[$(search-view-icon) Search By Pattern](command:semgrep.search)"
-      }
-    ],
     "menus": {
-      "view/title": [
-        {
-          "command": "semgrep.search.clear",
-          "when": "view == semgrep-search-results && semgrep.searchHasResults",
-          "group": "navigation"
-        },
-        {
-          "command": "semgrep.search.refresh",
-          "when": "view == semgrep-search-results && semgrep.searchHasResults",
-          "group": "navigation"
-        }
-      ],
       "editor/context": [
         {
           "command": "semgrep.showAst",
@@ -261,12 +264,12 @@
           {
             "id": "semgrep.welcome.signin",
             "title": "Level up your security practice",
-            "description": "Tkae a simple step for Pro coverage.\n\n[Sign in to use Pro features](command:semgrep.login \"Sign in to Semgrep Cloud Platform\")",
+            "description": "Take a simple step for Pro coverage.\n\n[Sign in to use Pro features](command:semgrep.login \"Sign in to Semgrep Cloud Platform\")",
             "media": {
               "markdown": "walkthrough/2-sign-in.md"
             },
             "completionEvents": [
-              "onCommand:semgrep.login"
+              "onContext:semgrep.loggedIn"
             ]
           },
           {
@@ -277,7 +280,7 @@
               "markdown": "walkthrough/3-support.md"
             },
             "completionEvents": [
-              "onLink:https://github.com/returntocorp/semgrep-vscode/issues",
+              "onLink:https://github.com/semgrep/semgrep-vscode/issues",
               "onLink:https://go.semgrep.dev/slack"
             ]
           }
@@ -287,41 +290,57 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",
-    "esbuild-base": "npm run setup-lspjs && esbuild ./src/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
+    "esbuild-base": "npm run download-lspjs && ./build.mjs",
     "esbuild": "npm run esbuild-base -- --sourcemap",
-    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
-    "test-compile": "tsc -p ./ && npm run esbuild",
+    "watch:esbuild": "npm run esbuild-base -- --sourcemap --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "lint": "eslint src --ext ts",
+    "test-compile": "tsc -p ./ && npm run esbuild",
     "pretest": "npm run test-compile && npm run lint && cp -rf src/test/fixtures out/src/test",
     "test-native": "node ./out/src/test/runTest.js",
     "test-js": "USE_JS=1 node ./out/src/test/runTest.js",
     "test": "npm run test-native && npm run test-js",
     "clean": "rm -rf ./out",
-    "setup-lspjs": "./download-lspjs.sh Main.bc.js language-server-wasm.js semgrep-lsp-bindings.js semgrep-lsp.js"
+    "download-lspjs": "./download-lspjs.sh",
+    "install:all": "npm install"
   },
   "devDependencies": {
     "@types/glob": "^7.1.3",
     "@types/mocha": "^9.1.1",
     "@types/node": "^14.0.27",
+    "@types/react": "^18.2.79",
+    "@types/react-dom": "^18.2.25",
     "@types/semver": "^7.3.13",
     "@types/tmp": "^0.2.3",
-    "@types/vscode": "1.66.0",
+    "@types/vscode": "1.86.0",
+    "@types/vscode-webview": "^1.57.0",
     "@types/which": "^2.0.1",
     "@typescript-eslint/eslint-plugin": "^3.8.0",
     "@typescript-eslint/parser": "^3.8.0",
+    "@vitejs/plugin-react": "^1.0.7",
     "@vscode/test-electron": "^2.3.8",
     "esbuild": "^0.17.19",
+    "esbuild-css-modules-plugin": "^3.1.0",
     "eslint": "^7.6.0",
     "find-process": "^1.4.7",
     "glob": "^7.1.6",
     "mocha": "^9.1.4",
     "tmp": "^0.2.1",
-    "typescript": "^4.7.4"
+    "typescript": "^4.7.4",
+    "typescript-plugin-css-modules": "^5.1.0"
   },
   "dependencies": {
+    "@sentry/esbuild-plugin": "^2.18.0",
+    "@sentry/node": "^8.7.0",
+    "@sentry/types": "^8.7.0",
     "@types/node-fetch": "^2.5.7",
+    "@vscode/webview-ui-toolkit": "^1.4.0",
     "lint-staged": "^13.0.3",
     "node-fetch": "^2.6.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^5.0.1",
+    "react-use": "^17.5.0",
     "semver": "^7.5.0",
     "temp-dir": "^3.0.0",
     "vscode-jsonrpc": "^6.0.0",

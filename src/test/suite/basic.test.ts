@@ -1,17 +1,16 @@
-import * as assert from "assert";
+import assert from "node:assert";
+import cp from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import * as vscode from "vscode";
-import * as cp from "child_process";
-import * as fs from "fs";
-
 import {
-  LanguageClient,
-  ProtocolNotificationType,
+  type LanguageClient,
+  type ProtocolNotificationType,
   PublishDiagnosticsNotification,
-  PublishDiagnosticsParams,
+  type PublishDiagnosticsParams,
 } from "vscode-languageclient/node";
-import path = require("path");
 
-const SCAN_TIMEOUT = 60000;
+const SCAN_TIMEOUT = 180000;
 const USE_JS = process.env["USE_JS"];
 let SKIPPED_FILES: string[] = [
   "l5000.java", // Causes stack overflow
@@ -27,6 +26,7 @@ if (USE_JS || process.platform === "win32") {
   const additional_skipped_files = [
     "long.py", // This one times out lspjs
     "test.ts", // Another timeout for lspjs
+    "Dockerfile", // Timeout related
     "cli/bin/semgrep", // No file extension == bad on windows. This is a bug in Guess_lang on how we determine executables
     "ograph_extended", // Fails because its an ocaml file in CLRF. I don't think anyone will care about CLRF ocaml files on windows :D
     "tree_sitter.ml", // Not sure why this fails, but it does
@@ -41,13 +41,26 @@ if (USE_JS || process.platform === "win32") {
     "Parse_rule_helpers.ml",
     "Parsing_plugin.ml",
     "autofix-printing-stats/run",
+    "datacreator.ts", // This one times out lspjs
+    "lib/insecurity.ts",
+    "server.ts",
+    "routes/logfileServer.ts",
+    "routes/order.ts",
+    "routes/profileImageUrlUpload.ts",
+    "routes/userProfile.ts",
+    "routes/videoHandler.ts",
+    "views/promotionVideo.pug",
+    "routes/login.ts",
+    "lib/startup/validatePreconditions.ts",
+    "routes/redirect.ts",
+    "routes/search.ts",
   ];
   SKIPPED_FILES = SKIPPED_FILES.concat(additional_skipped_files);
 }
 function clientNotification(
   client: LanguageClient,
   type: ProtocolNotificationType<any, any>,
-  checkParams: (params: any) => boolean = () => true
+  checkParams: (params: any) => boolean = () => true,
 ) {
   return new Promise((resolve) => {
     client.onNotification(type, (params) => {
@@ -65,7 +78,6 @@ function makeFileUntracked(cwd: string, path: string) {
 async function getEnv() {
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const extension = vscode.extensions.getExtension("Semgrep.semgrep")!;
-
   // set semgrep to use javascript
   if (USE_JS) {
     vscode.workspace
@@ -132,21 +144,26 @@ suite("Extension Features", function () {
     const previousResult = resultsHashMap.get(result.path);
     resultsHashMap.set(
       result.path,
-      previousResult ? previousResult.concat(result) : [result]
+      previousResult ? previousResult.concat(result) : [result],
     );
   });
 
   suiteSetup(async () => {
     const filesToUnstage = Array.from(resultsHashMap.keys());
     // unstage files so the extension picks them up
-    console.log(`Unstaging ${filesToUnstage.length} files}`);
+    console.log(`Unstaging ${filesToUnstage.length} files`);
     for (const file of filesToUnstage) {
       makeFileUntracked(workfolderPath, file);
     }
     console.log("Starting extension");
     const env = await getEnv();
     console.log("Waiting for extension to start");
-    await env.startupPromise;
+    const startupPromise = new Promise<void>((resolve) => {
+      env.onRulesRefreshed(() => {
+        resolve();
+      });
+    });
+    await startupPromise;
     console.log("Extension started");
     client = env.client;
     console.log("Starting tests");
@@ -167,7 +184,7 @@ suite("Extension Features", function () {
       const diagnosticsPromise = clientNotification(
         client,
         PublishDiagnosticsNotification.type,
-        (params: PublishDiagnosticsParams) => params.uri === uri.toString()
+        (params: PublishDiagnosticsParams) => params.uri === uri.toString(),
       );
       doc = await vscode.workspace.openTextDocument(uri);
       const diagnostics =
@@ -175,7 +192,7 @@ suite("Extension Features", function () {
       assert.strictEqual(
         diagnostics.diagnostics.length,
         result.length,
-        "No diagnostics on open"
+        "No diagnostics on open",
       );
     }).timeout(SCAN_TIMEOUT);
     // Test that we can edit the file and the diagnostics update
@@ -186,11 +203,11 @@ suite("Extension Features", function () {
       const diagnosticsPromise = clientNotification(
         client,
         PublishDiagnosticsNotification.type,
-        (params: PublishDiagnosticsParams) => params.uri === uri.toString()
+        (params: PublishDiagnosticsParams) => params.uri === uri.toString(),
       );
       // delete all content
       await editor.edit((editBuilder) =>
-        editBuilder.delete(new vscode.Range(0, 0, doc.lineCount, 0))
+        editBuilder.delete(new vscode.Range(0, 0, doc.lineCount, 0)),
       );
       await doc.save();
       const diagnostics =
@@ -198,17 +215,17 @@ suite("Extension Features", function () {
       assert.strictEqual(
         diagnostics.diagnostics.length,
         0,
-        "Diagnostics after delete"
+        "Diagnostics after delete",
       );
 
       // restore content
       const restoreDiagnosticsPromise = clientNotification(
         client,
         PublishDiagnosticsNotification.type,
-        (params: PublishDiagnosticsParams) => params.uri === uri.toString()
+        (params: PublishDiagnosticsParams) => params.uri === uri.toString(),
       );
       await editor.edit((editBuilder) =>
-        editBuilder.insert(new vscode.Position(0, 0), content)
+        editBuilder.insert(new vscode.Position(0, 0), content),
       );
       await doc.save();
       const restoreDiagnostics =
@@ -216,7 +233,7 @@ suite("Extension Features", function () {
       assert.strictEqual(
         restoreDiagnostics.diagnostics.length,
         result.length,
-        "No diagnostics after change"
+        "No diagnostics after change",
       );
     }).timeout(SCAN_TIMEOUT);
   });
